@@ -71,3 +71,16 @@ class seg_target(object):
         target=(target[0]*256+target[1])*256+target[2]
         target=self.class_index[target]
         return target
+def hist(label_true,label_pred,num_cls):
+    # mask=(label_true>=0)&(label_true<num_cls)
+    hist=np.bincount(label_pred.astype(int)*num_cls+label_true,minlength=num_cls**2).reshape(num_cls,num_cls)
+    return hist
+def label_acc_score(label_true,label_pred,num_cls):
+    hist_matrix=np.zeros((num_cls,num_cls))
+    for i,j in zip(label_true,label_pred):
+        hist_matrix+=hist(i,j,num_cls)
+    diag=np.diag(hist_matrix).sum()
+    # acc=diag/hist_matrix.sum()
+    acc_cls=diag/hist_matrix.sum(axis=1)
+    m_iou=diag/(hist_matrix.sum(axis=1)+hist_matrix.sum(axis=0)-diag)
+    return acc_cls,m_iou
