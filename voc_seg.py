@@ -13,7 +13,7 @@ voc_colormap = [[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
                 [0, 64, 128]]
 class my_data(torch.utils.data.Dataset):
     #if target_transform=mask_transform is
-    def __init__(self,data_size,root='data',image_set='train',transform=None,target_transform=None):
+    def __init__(self,data_size,root='/home/llm/PycharmProjects/seg_1224/data/',image_set='train',transform=None,target_transform=None):
         self.shape=data_size
         self.root=os.path.expanduser(root)
         self.transform=transform
@@ -73,14 +73,14 @@ class seg_target(object):
         return target
 def hist(label_true,label_pred,num_cls):
     # mask=(label_true>=0)&(label_true<num_cls)
-    hist=np.bincount(label_pred.astype(int)*num_cls+label_true,minlength=num_cls**2).reshape(num_cls,num_cls)
+    hist=np.bincount(label_pred.astype(int)*num_cls+label_true.astype(int),minlength=num_cls**2).reshape(num_cls,num_cls)
     return hist
 def label_acc_score(label_true,label_pred,num_cls):
     hist_matrix=np.zeros((num_cls,num_cls))
     for i,j in zip(label_true,label_pred):
-        hist_matrix+=hist(i,j,num_cls)
-    diag=np.diag(hist_matrix).sum()
+        hist_matrix+=hist(i.cpu().numpy().flatten(),j.cpu().numpy().flatten(),num_cls)
+    diag=np.diag(hist_matrix)
     # acc=diag/hist_matrix.sum()
-    acc_cls=diag/hist_matrix.sum(axis=1)
+    acc_cls=diag/hist_matrix.sum(axis=0)
     m_iou=diag/(hist_matrix.sum(axis=1)+hist_matrix.sum(axis=0)-diag)
-    return acc_cls,m_iou
+    return acc_cls,m_iou,hist_matrix

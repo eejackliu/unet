@@ -3,22 +3,31 @@ import torch.nn as nn
 import torch.nn.functional as f
 import numpy as np
 import torchvision as tv
+import math
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from torch.utils.data import DataLoader as dataloader
 import nonechucks as nc
-from voc_seg import my_data,label_acc_score,voc_colormap
+from voc_seg import my_data,label_acc_score,voc_colormap,seg_target
 vgg=tv.models.vgg19_bn(pretrained=True)
 
 image_transform=transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.485, 0.456, 0.406),(0.229, 0.224, 0.225))])
-train_data=my_data((320,240),root='/home/local/SPREADTRUM/gary.liu/Documents/cs231/seg_1224/data/',transform=image_transform)
-test_data=my_data((320,240),root='/home/local/SPREADTRUM/gary.liu/Documents/cs231/seg_1224/data/',image_set='val',transform=image_transform)
+train_data=my_data((240,320),transform=image_transform)
+test_data=my_data((240,320),image_set='val',transform=image_transform)
 trainset=nc.SafeDataset(train_data)
 testset=nc.SafeDataset(test_data)
-trainload=nc.SafeDataLoader(trainset,batch_size=2)
-testload=nc.SafeDataLoader(testset,batch_size=1)
-# device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-device=torch.device('cpu')
+# trainload=nc.SafeDataLoader(trainset,batch_size=8)
+testload=nc.SafeDataLoader(testset,batch_size=8)
+
+
+mask_transform=transforms.Compose([seg_target()])# to_tensor will make it from nhwc to nchw
+
+train_voc=tv.datasets.VOCSegmentation('/home/llm/PycharmProjects/seg_1224/data/',image_set='train',transform=image_transform,target_transform=mask_transform)
+trainload=torch.utils.data.DataLoader(train_voc,shuffle=True)
+
+
+device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# device=torch.device('cpu')
 dtype=torch.float32
 num_class = 21
 class deconv(nn.Module):
@@ -34,14 +43,14 @@ class deconv(nn.Module):
                                    nn.ConvTranspose2d(middlechannel,outchannel,2,2)
                                      )
         else:
-            self.block=nn.Sequential(nn.Conv2d(inchannel,middlechannel,3,padding=1),
+            self.block=nn.Sequential(nn.Conv2d(inchannel,middlechannel,3,padding=0),
                                    nn.BatchNorm2d(middlechannel),
                                    nn.ReLU(inplace=True),
-                                   nn.Conv2d(middlechannel,middlechannel,3,padding=1),
+                                   nn.Conv2d(middlechannel,middlechannel,3,padding=0),
                                    nn.BatchNorm2d(middlechannel),
                                    nn.ReLU(inplace=True),
                                    nn.Conv2d(middlechannel,outchannel,1),         #since unsampling cann't change the channel num ,have to change channel num before next block
-                                   nn.UpsamplingBilinear2d(scale_factor=2)
+                                   nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True)
                                      )
     def forward(self, input):
         return self.block(input)
@@ -79,17 +88,17 @@ class UNET(nn.Module):
                                  vgg.features[30],
                                  vgg.features[31],
                                  nn.ReLU(inplace=True),)
-        self.centre=deconv(512,1024,512,True)
-        self.deconv4=deconv(1024,512,256,True)
-        self.deconv3=deconv(512,256,128,True)
-        self.deconv2=deconv(256,128,64,True)
-        self.deconv1=nn.Sequential(nn.Conv2d(128,64,3,padding=1),
+        self.centre=deconv(512,1024,512)
+        self.deconv4=deconv(1024,512,256)
+        self.deconv3=deconv(512,256,128)
+        self.deconv2=deconv(256,128,64)
+        self.deconv1=nn.Sequential(nn.Conv2d(128,64,3,padding=0),
                                    nn.BatchNorm2d(64),
                                    nn.ReLU(inplace=True),
-                                   nn.Conv2d(64,64,3,padding=1),
+                                   nn.Conv2d(64,64,3,padding=0),
                                    nn.BatchNorm2d(64),
                                    nn.ReLU(inplace=True),
-                                   nn.Conv2d(64,num_class,1),)
+                                   nn.Conv2d(64,num_class,1))
         # self.deconv4=nn.Sequential(nn.Conv2d(1024,512,3,padding=1),
         #                            nn.BatchNorm2d(512),
         #                            nn.ReLU(inplace=True),
@@ -129,23 +138,25 @@ class UNET(nn.Module):
         down3=self.conv3(self.pool(down2))
         down4=self.conv4(self.pool(down3))
         down5=self.centre(self.pool(down4))
-        # print 'down1',down1.shape
-        # print 'down2',down2.shape
-        # print 'down3',down3.shape
-        # print 'down4',down4.shape
-        # print 'down5',down5.shape
-        down4=self.center_crop(down4,down5)
+        # print ('down1',down1.shape)
+        # print ('down2',down2.shape)
+        # print ('down3',down3.shape)
+        # print ('down4',down4.shape)
+        # print ('down5',down5.shape)
+
+        down5=self.pad(down4,down5)
         up1=self.deconv4(torch.cat((down4,down5),dim=1))
-        # print 'up1', up1.shape
-        down3=self.center_crop(down3,up1)
+        # print ('up1', up1.shape)
+        up1=self.pad(down3,up1)
         up2=self.deconv3(torch.cat((up1,down3),dim=1))
-        # print 'up2', up2.shape
-        down2=self.center_crop(down2,up2)
+        # print ('up2', up2.shape)
+        up2=self.pad(down2,up2)
         up3=self.deconv2(torch.cat((up2,down2),dim=1))
-        # print 'up3', up3.shape
-        down1=self.center_crop(down1,up3)
+        # print ('up3', up3.shape)
+        up3=self.pad(down1,up3)
         up4=self.deconv1(torch.cat((up3,down1),dim=1))
-        # print 'up4',up4.shape
+        up4=self.pad(input,up4)
+        # print ('up4',up4.shape)
         return up4
     def center_crop(self,img,target):
         h,w = img.shape[-2:]
@@ -154,6 +165,12 @@ class UNET(nn.Module):
         j = int(round((w - tw) / 2.))
         return img[...,i:i+th,j:j+tw]
 
+    def pad(self,target,img): # the img & target is reverse as center_crop
+        h,w = img.shape[-2:]
+        th, tw = target.shape[-2:]
+        i=int(math.ceil((th-h)/2.))
+        j=int(math.ceil((tw-w)/2.))
+        return torch.nn.functional.pad(img,(j,tw-w-j,i,th-h-i),mode='reflect')
 def train(epoch):
     model=UNET()
     model.train()
@@ -170,8 +187,8 @@ def train(epoch):
             loss.backward()
             optimize.step()
             tmp=loss.data
-            print "loss ",tmp
-        print "{0} epoch ,loss is {1}".format(i,tmp)
+            # print ("loss ",tmp)
+        print ("{0} epoch ,loss is {1}".format(i,tmp))
     return model
 def label2image(pred):
     colormap=np.array(voc_colormap)
@@ -204,13 +221,47 @@ def picture(img,pred,mask):
         plt.subplot(3,num,i)
         plt.imshow(j)
     plt.show()
-model=UNET()
 
-img,pred,mask=test(model)
+model=train(100)
+torch.save(model.state_dict(),'unet_up_no_pad')
+# model=UNET()
+# model.load_state_dict(torch.load('unet_up_pad'))
+
+# img=[]
+# pred=[]
+# mask=[]
+# with torch.no_grad():
+#     model.eval()
+#     model.to(device)
+#     for image,mask_img in trainload:
+#         image=image.to(device,dtype=dtype)
+#         output=model(image)
+#         label=output.argmax(dim=1)
+#         pred.append(label)
+#         img.append(image)
+#         mask.append(mask_img)
+#     # pred=torch.cat(pred,dim=0)
+#     # img=torch.cat(img,dim=0)
+#     # mask=torch.cat(mask,dim=0)
+# ap,iou,hist=label_acc_score(mask,pred,num_class)
+# print(ap,iou)
+# print(hist)
+# picture(img[0].cpu().numpy()[:1],label2image(pred[0].cpu().numpy())/255.0,label2image(mask[0].cpu().numpy().astype(np.int))/255.0)
 
 
-score=label_acc_score(mask.numpy().astype(np.int),pred.numpy().astype(np.int),num_class)
 
-pred_image=label2image(pred.numpy().astype(np.int))
-mask_image=label2image(mask.numpy().astype(np.int))
-picture(img.numpy(),pred_image,mask_image)
+def torch_pic(img,mask,pred):
+    voc_map=torch.from_numpy(np.array(voc_colormap))
+    mask=voc_map[mask]
+    pred=voc_map[pred]
+    tmp=tv.utils.make_grid(torch.cat(voc_map))
+
+
+# img,pred,mask=test(model)
+#
+#
+# score=label_acc_score(mask.numpy().astype(np.int),pred.numpy().astype(np.int),num_class)
+#
+# pred_image=label2image(pred.numpy().astype(np.int))
+# mask_image=label2image(mask.numpy().astype(np.int))
+# picture(img.numpy(),pred_image,mask_image)
